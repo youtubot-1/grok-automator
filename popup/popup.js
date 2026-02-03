@@ -1,14 +1,21 @@
-// Grok Video Generator - Popup Script
+// Grok Automator - Popup Script
 
-// State
+// ==================== VIDEO TAB STATE ====================
 let selectedFiles = [];
 let isProcessing = false;
 let isPaused = false;
 let currentTabId = null;
 
-// DOM Elements
+// ==================== IMAGE EDIT TAB STATE ====================
+let editIsProcessing = false;
+let editIsPaused = false;
+
+// ==================== DOM ELEMENTS ====================
 const elements = {
+  // Common
   statusBadge: document.getElementById('status-badge'),
+
+  // Video tab
   aspectRatio: document.getElementById('aspect-ratio'),
   downloadFolder: document.getElementById('download-folder'),
   selectFolderBtn: document.getElementById('select-folder-btn'),
@@ -31,17 +38,64 @@ const elements = {
   downloadAllBtn: document.getElementById('download-all-btn'),
   clearVideosBtn: document.getElementById('clear-videos-btn'),
   logList: document.getElementById('log-list'),
-  warningBanner: document.getElementById('warning-banner')
+  warningBanner: document.getElementById('warning-banner'),
+
+  // Image Edit tab
+  editPrompts: document.getElementById('edit-prompts'),
+  editUploadPromptsBtn: document.getElementById('edit-upload-prompts-btn'),
+  editPromptsFile: document.getElementById('edit-prompts-file'),
+  editPromptsCount: document.getElementById('edit-prompts-count'),
+  editClearPromptsBtn: document.getElementById('edit-clear-prompts-btn'),
+  editDelay: document.getElementById('edit-delay'),
+  editDelayValue: document.getElementById('edit-delay-value'),
+  editDownloadFolder: document.getElementById('edit-download-folder'),
+  editStartBtn: document.getElementById('edit-start-btn'),
+  editPauseBtn: document.getElementById('edit-pause-btn'),
+  editStopBtn: document.getElementById('edit-stop-btn'),
+  editWarningBanner: document.getElementById('edit-warning-banner'),
+  editProgressSection: document.getElementById('edit-progress-section'),
+  editProgressFill: document.getElementById('edit-progress-fill'),
+  editProgressText: document.getElementById('edit-progress-text'),
+  editCurrentStatus: document.getElementById('edit-current-status'),
+  editGeneratedImagesSection: document.getElementById('edit-generated-images-section'),
+  editGeneratedImagesList: document.getElementById('edit-generated-images-list'),
+  editGeneratedCount: document.getElementById('edit-generated-count'),
+  editDownloadAllBtn: document.getElementById('edit-download-all-btn'),
+  editClearImagesBtn: document.getElementById('edit-clear-images-btn'),
+  editLogList: document.getElementById('edit-log-list')
 };
 
-// Initialize
+// ==================== INITIALIZE ====================
 document.addEventListener('DOMContentLoaded', async () => {
   await checkGrokPage();
   await loadState();
+  await loadEditState();
+  setupTabSwitching();
   setupEventListeners();
+  setupEditEventListeners();
   updateUI();
+  updateEditUI();
   setInterval(refreshState, 1000);
 });
+
+// ==================== TAB SWITCHING ====================
+function setupTabSwitching() {
+  document.querySelectorAll('.tab-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const tabName = btn.dataset.tab;
+
+      // Update tab buttons
+      document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+
+      // Update tab content
+      document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+      document.getElementById(`tab-${tabName}`).classList.add('active');
+    });
+  });
+}
+
+// ==================== COMMON ====================
 
 // Check if current tab is Grok Imagine page
 async function checkGrokPage() {
@@ -60,6 +114,25 @@ async function checkGrokPage() {
     console.error('Error checking page:', error);
   }
 }
+
+// Truncate string
+function truncate(str, maxLength) {
+  if (!str) return '';
+  if (str.length <= maxLength) return str;
+  return str.substring(0, maxLength - 3) + '...';
+}
+
+// Convert file to base64
+function fileToBase64(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = () => reject(new Error('Failed to read file'));
+    reader.readAsDataURL(file);
+  });
+}
+
+// ==================== VIDEO TAB ====================
 
 // Load state from background
 async function loadState() {
@@ -83,6 +156,7 @@ async function loadState() {
 // Refresh state periodically
 async function refreshState() {
   try {
+    // Refresh video state
     const response = await chrome.runtime.sendMessage({ action: 'getState' });
     if (response) {
       const wasProcessing = isProcessing;
@@ -107,12 +181,42 @@ async function refreshState() {
         await loadGeneratedVideos();
       }
     }
+
+    // Refresh image edit state
+    const editResponse = await chrome.runtime.sendMessage({ action: 'getImageEditState' });
+    if (editResponse) {
+      const wasEditProcessing = editIsProcessing;
+      editIsProcessing = editResponse.isProcessing || false;
+      editIsPaused = editResponse.isPaused || false;
+      updateEditProgressDisplay(editResponse);
+      updateEditLogDisplay(editResponse.log || []);
+      updateEditControlButtons();
+
+      if (editIsProcessing && !editIsPaused) {
+        const currentPrompt = editResponse.prompts?.[editResponse.currentIndex];
+        if (currentPrompt) {
+          elements.editCurrentStatus.textContent = `Editing: "${truncate(currentPrompt, 30)}"`;
+        }
+      } else if (editIsPaused) {
+        elements.editCurrentStatus.textContent = 'Paused';
+      } else if (!editIsProcessing && editResponse.error) {
+        elements.editCurrentStatus.textContent = `Error: ${truncate(editResponse.error, 50)}`;
+      } else if (!editIsProcessing && editResponse.currentIndex >= (editResponse.prompts?.length || 0) && (editResponse.prompts?.length || 0) > 0) {
+        elements.editCurrentStatus.textContent = 'Complete!';
+      } else if (!editIsProcessing && wasEditProcessing) {
+        elements.editCurrentStatus.textContent = 'Stopped';
+      }
+
+      if (wasEditProcessing && !editIsProcessing) {
+        await loadEditGeneratedImages();
+      }
+    }
   } catch (error) {
     console.error('Error refreshing state:', error);
   }
 }
 
-// Setup event listeners
+// Setup event listeners (Video tab)
 function setupEventListeners() {
   elements.selectFolderBtn.addEventListener('click', () => elements.folderInput.click());
   elements.selectFilesBtn.addEventListener('click', () => elements.filesInput.click());
@@ -281,13 +385,13 @@ function updateLogDisplay(log) {
     let icon = '';
     let statusClass = '';
     if (entry.status === 'completed') {
-      icon = '✓';
+      icon = '\u2713';
       statusClass = 'success';
     } else if (entry.status === 'failed') {
-      icon = '✗';
+      icon = '\u2717';
       statusClass = 'error';
     } else if (entry.status === 'processing') {
-      icon = '↻';
+      icon = '\u21BB';
       statusClass = 'processing';
     }
 
@@ -450,19 +554,371 @@ async function clearGeneratedVideos() {
   }
 }
 
-// Convert file to base64
-function fileToBase64(file) {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(reader.result);
-    reader.onerror = () => reject(new Error('Failed to read file'));
-    reader.readAsDataURL(file);
-  });
+// ==================== IMAGE EDIT TAB ====================
+
+// Get prompts from textarea as array
+function getEditPrompts() {
+  const text = elements.editPrompts.value.trim();
+  if (!text) return [];
+  return text.split('\n').map(p => p.trim()).filter(p => p.length > 0);
 }
 
-// Truncate string
-function truncate(str, maxLength) {
-  if (!str) return '';
-  if (str.length <= maxLength) return str;
-  return str.substring(0, maxLength - 3) + '...';
+// Update prompts count display
+function updateEditPromptsCount() {
+  const prompts = getEditPrompts();
+  elements.editPromptsCount.textContent = `${prompts.length} prompt${prompts.length !== 1 ? 's' : ''}`;
+  elements.editClearPromptsBtn.disabled = prompts.length === 0;
+  updateEditControlButtons();
+}
+
+// Setup Image Edit event listeners
+function setupEditEventListeners() {
+  // Prompts input
+  elements.editPrompts.addEventListener('input', updateEditPromptsCount);
+
+  // .txt file upload
+  elements.editUploadPromptsBtn.addEventListener('click', () => elements.editPromptsFile.click());
+  elements.editPromptsFile.addEventListener('change', handlePromptsFileUpload);
+
+  // Clear prompts
+  elements.editClearPromptsBtn.addEventListener('click', () => {
+    elements.editPrompts.value = '';
+    updateEditPromptsCount();
+  });
+
+  // Delay slider
+  elements.editDelay.addEventListener('input', () => {
+    elements.editDelayValue.textContent = elements.editDelay.value;
+  });
+
+  // Download folder
+  elements.editDownloadFolder.value = 'grok-edits';
+
+  // Control buttons
+  elements.editStartBtn.addEventListener('click', startImageEdit);
+  elements.editPauseBtn.addEventListener('click', toggleEditPause);
+  elements.editStopBtn.addEventListener('click', stopImageEdit);
+
+  // Generated images actions
+  elements.editDownloadAllBtn.addEventListener('click', downloadAllEditImages);
+  elements.editClearImagesBtn.addEventListener('click', clearEditGeneratedImages);
+
+  // Debug button
+  document.getElementById('edit-debug-btn').addEventListener('click', debugEditDOM);
+}
+
+// Handle .txt file upload for prompts
+async function handlePromptsFileUpload(event) {
+  const file = event.target.files[0];
+  if (!file) return;
+
+  try {
+    const text = await file.text();
+    // Append to existing prompts
+    const existing = elements.editPrompts.value.trim();
+    elements.editPrompts.value = existing ? existing + '\n' + text : text;
+    updateEditPromptsCount();
+  } catch (error) {
+    console.error('Error reading prompts file:', error);
+    alert('Failed to read file: ' + error.message);
+  }
+
+  event.target.value = '';
+}
+
+// Load edit state from background
+async function loadEditState() {
+  try {
+    const response = await chrome.runtime.sendMessage({ action: 'getImageEditState' });
+    if (response) {
+      editIsProcessing = response.isProcessing || false;
+      editIsPaused = response.isPaused || false;
+      if (response.delay) {
+        elements.editDelay.value = response.delay;
+        elements.editDelayValue.textContent = response.delay;
+      }
+      updateEditProgressDisplay(response);
+      updateEditLogDisplay(response.log || []);
+      updateEditControlButtons();
+      await loadEditGeneratedImages();
+    }
+  } catch (error) {
+    console.error('Error loading edit state:', error);
+  }
+}
+
+// Start image edit processing
+async function startImageEdit() {
+  const prompts = getEditPrompts();
+  if (prompts.length === 0) {
+    alert('Please enter at least one prompt.');
+    return;
+  }
+
+  if (!elements.statusBadge.classList.contains('connected')) {
+    alert('Please navigate to Grok Imagine page first.');
+    return;
+  }
+
+  editIsProcessing = true;
+  editIsPaused = false;
+
+  await chrome.runtime.sendMessage({
+    action: 'startImageEdit',
+    tabId: currentTabId,
+    prompts: prompts,
+    delay: parseInt(elements.editDelay.value, 10),
+    downloadFolder: elements.editDownloadFolder.value || 'grok-edits'
+  });
+
+  elements.editProgressSection.style.display = 'block';
+  elements.editCurrentStatus.textContent = 'Starting...';
+  updateEditControlButtons();
+}
+
+// Toggle edit pause
+async function toggleEditPause() {
+  if (editIsPaused) {
+    editIsPaused = false;
+    await chrome.runtime.sendMessage({ action: 'resumeImageEdit' });
+    elements.editPauseBtn.textContent = 'Pause';
+    elements.editCurrentStatus.textContent = 'Resuming...';
+  } else {
+    editIsPaused = true;
+    await chrome.runtime.sendMessage({ action: 'pauseImageEdit' });
+    elements.editPauseBtn.textContent = 'Resume';
+    elements.editCurrentStatus.textContent = 'Paused';
+  }
+  updateEditControlButtons();
+}
+
+// Stop image edit
+async function stopImageEdit() {
+  if (!confirm('Are you sure you want to stop image editing?')) return;
+
+  editIsProcessing = false;
+  editIsPaused = false;
+  await chrome.runtime.sendMessage({ action: 'stopImageEdit' });
+  updateEditControlButtons();
+}
+
+// Update edit progress display
+function updateEditProgressDisplay(state) {
+  if (state.isProcessing || state.isPaused || (state.log && state.log.length > 0)) {
+    elements.editProgressSection.style.display = 'block';
+    const total = state.prompts?.length || 0;
+    const current = state.currentIndex || 0;
+    const percent = total > 0 ? (current / total) * 100 : 0;
+    elements.editProgressFill.style.width = `${percent}%`;
+    elements.editProgressText.textContent = `${current}/${total} prompts`;
+  }
+}
+
+// Update edit log display
+function updateEditLogDisplay(log) {
+  if (!log || log.length === 0) {
+    elements.editLogList.innerHTML = '<p class="empty-log">No activity yet</p>';
+    return;
+  }
+
+  elements.editLogList.innerHTML = log.map(entry => {
+    let icon = '';
+    let statusClass = '';
+    if (entry.status === 'completed') {
+      icon = '\u2713';
+      statusClass = 'success';
+    } else if (entry.status === 'failed') {
+      icon = '\u2717';
+      statusClass = 'error';
+    } else if (entry.status === 'processing') {
+      icon = '\u21BB';
+      statusClass = 'processing';
+    }
+
+    return `
+      <div class="log-entry ${statusClass}">
+        <span class="log-icon">${icon}</span>
+        <span class="log-filename">${entry.filename}</span>
+        ${entry.error ? `<span class="log-error">(${truncate(entry.error, 20)})</span>` : ''}
+      </div>
+    `;
+  }).join('');
+
+  elements.editLogList.scrollTop = elements.editLogList.scrollHeight;
+}
+
+// Update edit control buttons
+function updateEditControlButtons() {
+  const isOnGrok = elements.statusBadge.classList.contains('connected');
+  const hasPrompts = getEditPrompts().length > 0;
+
+  if (editIsProcessing) {
+    elements.editStartBtn.disabled = true;
+    elements.editPauseBtn.disabled = false;
+    elements.editStopBtn.disabled = false;
+    elements.editPauseBtn.textContent = editIsPaused ? 'Resume' : 'Pause';
+    elements.editPrompts.disabled = true;
+    elements.editUploadPromptsBtn.disabled = true;
+    elements.editClearPromptsBtn.disabled = true;
+    elements.editWarningBanner.style.display = 'flex';
+  } else {
+    elements.editStartBtn.disabled = !hasPrompts || !isOnGrok;
+    elements.editPauseBtn.disabled = true;
+    elements.editStopBtn.disabled = true;
+    elements.editPauseBtn.textContent = 'Pause';
+    elements.editPrompts.disabled = false;
+    elements.editUploadPromptsBtn.disabled = false;
+    elements.editClearPromptsBtn.disabled = !hasPrompts;
+    elements.editWarningBanner.style.display = 'none';
+  }
+}
+
+// Update edit UI
+function updateEditUI() {
+  updateEditPromptsCount();
+  updateEditControlButtons();
+}
+
+// Load generated images from background
+async function loadEditGeneratedImages() {
+  try {
+    const response = await chrome.runtime.sendMessage({ action: 'getEditGeneratedImages' });
+    if (response && response.images) {
+      displayEditGeneratedImages(response.images);
+    }
+  } catch (error) {
+    console.error('Error loading edit generated images:', error);
+  }
+}
+
+// Display generated images
+function displayEditGeneratedImages(images) {
+  if (!images || images.length === 0) {
+    elements.editGeneratedImagesSection.style.display = 'none';
+    return;
+  }
+
+  elements.editGeneratedImagesSection.style.display = 'block';
+  elements.editGeneratedCount.textContent = `(${images.length})`;
+
+  elements.editGeneratedImagesList.innerHTML = images.map((image, index) => `
+    <div class="generated-image-item" data-index="${index}" title="${image.filename}">
+      <img src="${image.url}" alt="${image.filename}">
+      <span class="image-name">${image.filename}</span>
+    </div>
+  `).join('');
+}
+
+// Convert a base64 data URL to a Blob
+function dataUrlToBlob(dataUrl) {
+  const parts = dataUrl.split(',');
+  const mime = parts[0].match(/:(.*?);/)[1];
+  const binary = atob(parts[1]);
+  const array = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) {
+    array[i] = binary.charCodeAt(i);
+  }
+  return new Blob([array], { type: mime });
+}
+
+// Download all edit images as a zip file
+async function downloadAllEditImages() {
+  try {
+    elements.editDownloadAllBtn.disabled = true;
+    elements.editDownloadAllBtn.textContent = 'Preparing...';
+
+    const response = await chrome.runtime.sendMessage({ action: 'getEditGeneratedImages' });
+    if (!response || !response.images || response.images.length === 0) {
+      alert('No images to download');
+      return;
+    }
+
+    const images = response.images;
+    const zip = new JSZip();
+    const folderName = elements.editDownloadFolder.value || 'grok-edits';
+    let addedCount = 0;
+
+    for (let i = 0; i < images.length; i++) {
+      const image = images[i];
+      elements.editDownloadAllBtn.textContent = `Adding ${i + 1}/${images.length}...`;
+
+      try {
+        let blob;
+        if (image.url.startsWith('data:')) {
+          // Base64 data URL - convert directly
+          blob = dataUrlToBlob(image.url);
+        } else {
+          // Regular URL - try fetching
+          const imgResponse = await fetch(image.url, { credentials: 'include' });
+          if (!imgResponse.ok) {
+            console.error(`Failed to fetch ${image.filename}: ${imgResponse.status}`);
+            continue;
+          }
+          blob = await imgResponse.blob();
+        }
+        zip.file(image.filename, blob);
+        addedCount++;
+      } catch (e) {
+        console.error(`Error processing ${image.filename}:`, e);
+      }
+    }
+
+    if (addedCount === 0) {
+      alert('Could not retrieve any images. Try running the generation again.');
+      return;
+    }
+
+    elements.editDownloadAllBtn.textContent = 'Creating zip...';
+    const zipBlob = await zip.generateAsync({ type: 'blob' });
+
+    const url = URL.createObjectURL(zipBlob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${folderName}.zip`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+
+  } catch (error) {
+    console.error('Error downloading images:', error);
+    alert('Download failed: ' + error.message);
+  } finally {
+    elements.editDownloadAllBtn.disabled = false;
+    elements.editDownloadAllBtn.textContent = 'Download All';
+  }
+}
+
+// Clear generated images
+async function clearEditGeneratedImages() {
+  if (!confirm('Are you sure you want to clear all generated images?')) return;
+
+  try {
+    await chrome.runtime.sendMessage({ action: 'clearEditGeneratedImages' });
+    elements.editGeneratedImagesSection.style.display = 'none';
+    elements.editGeneratedImagesList.innerHTML = '';
+  } catch (error) {
+    console.error('Error clearing images:', error);
+  }
+}
+
+// Debug: inspect the edit mode DOM
+async function debugEditDOM() {
+  const output = document.getElementById('edit-debug-output');
+  const btn = document.getElementById('edit-debug-btn');
+  btn.textContent = 'Inspecting...';
+  output.style.display = 'block';
+  output.textContent = 'Loading...';
+
+  try {
+    const response = await chrome.runtime.sendMessage({
+      action: 'debugEditDOM',
+      tabId: currentTabId
+    });
+    output.textContent = JSON.stringify(response, null, 2);
+  } catch (error) {
+    output.textContent = 'Error: ' + error.message;
+  } finally {
+    btn.textContent = 'Debug: Inspect Edit DOM';
+  }
 }
